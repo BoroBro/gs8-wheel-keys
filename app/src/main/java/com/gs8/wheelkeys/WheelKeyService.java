@@ -164,6 +164,15 @@ public class WheelKeyService extends Service {
         } catch (Exception e) { Log.w(TAG, "claim err: " + e); }
     }
 
+    private void reclaimAfterPlayPause() {
+        if (mLogic == null) return;
+        int src = getSourceId();
+        if (src != ID_THIRD_APP) {
+            Log.i(TAG, "reclaim after play/pause: source was " + src + " -> 15");
+            claimSource();
+        }
+    }
+
     private void claimIfThirdActive() {
         if (mLogic == null) return;
         if (getThirdSourceId() == ID_THIRD_APP) claimSource();
@@ -230,7 +239,13 @@ public class WheelKeyService extends Service {
             while (mLogRun && (line = br.readLine()) != null) {
                 // кнопка голоса (длинное нажатие EASYCONN) -> play/pause
                 if (line.contains("KEYCODE_EASYCONN")) {
-                    mMain.post(() -> forwardToHur(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE));
+                    mMain.post(() -> {
+                        forwardToHur(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);
+                        // Прошивка на этой кнопке пытается запустить EasyConn и
+                        // уводит источник от 15 -> возвращаем себе источник.
+                        mMain.postDelayed(WheelKeyService.this::reclaimAfterPlayPause, 500);
+                        mMain.postDelayed(WheelKeyService.this::reclaimAfterPlayPause, 1400);
+                    });
                 }
             }
         } catch (Exception e) {
