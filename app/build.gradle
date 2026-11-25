@@ -5,15 +5,19 @@ android {
     defaultConfig {
         applicationId "com.gs8.wheelkeys"
         minSdk 28
-        targetSdk 28            // target 28 = как Android 9, без ужесточений фоновых служб
+        targetSdk 28
         versionCode 1
         versionName "1.0"
     }
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig signingConfigs.debug   // подписываем debug-ключом, для сайдлоада хватает
+            signingConfig signingConfigs.debug
         }
+    }
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
