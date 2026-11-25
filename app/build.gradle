@@ -19,7 +19,7 @@ android {
             storeFile file('gs8.keystore')
             storePassword 'gs8store'
             keyAlias 'gs8'
-            keyPassword 'gs8key'
+            keyPassword 'gs8store'
         }
     }
 
