@@ -18,14 +18,19 @@ jobs:
           gradle-version: '8.9'
       - name: Build release APK
         run: gradle assembleRelease --no-daemon --stacktrace
-      - name: Upload APK (artifact)
-        uses: actions/upload-artifact@v4
-        with:
-          name: GS8WheelKeys-apk
-          path: app/build/outputs/apk/release/*.apk
-      - name: Publish APK to 'latest' release
+      - name: Prepare versioned APK
+        id: prep
+        run: |
+          VN=$(grep -oP 'versionName\s+"\K[^"]+' app/build.gradle | head -1)
+          TAG="v${VN}-b${{ github.run_number }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/gs8-wheelkeys-${TAG}.apk"
+          ls -la dist
+      - name: Create versioned release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest
-          name: Latest build
-          files: app/build/outputs/apk/release/*.apk
+          tag_name: ${{ steps.prep.outputs.tag }}
+          name: ${{ steps.prep.outputs.tag }}
+          files: dist/*.apk
+          make_latest: true
