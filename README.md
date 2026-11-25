@@ -35,3 +35,6 @@
 
 ## Сборка в Android Studio (альтернатива)
 Открыть папку проекта → Run 'app' или Build → Build APK(s).
+
+## Скачать APK
+   Скачать APK можно справа в меню в Releases
