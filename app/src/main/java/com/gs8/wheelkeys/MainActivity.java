@@ -3,83 +3,81 @@ package com.gs8.wheelkeys;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
+import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-/**
- * Простой экран: статус права READ_LOGS, кнопки Старт/Стоп службы,
- * текущая раскладка и последнее пойманное событие.
- */
 public class MainActivity extends Activity {
 
-    private TextView status;
-    private TextView lastEvent;
-    private final Handler ui = new Handler(Looper.getMainLooper());
+    private TextView mStatus;
 
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
-
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        int pad = (int) (16 * getResources().getDisplayMetrics().density);
-        root.setPadding(pad, pad, pad, pad);
+        root.setPadding(32, 32, 32, 32);
 
         TextView title = new TextView(this);
-        title.setText("GS8 Wheel Keys → HUR");
+        title.setText("GS8 Wheel Keys");
         title.setTextSize(22);
         root.addView(title);
 
-        status = new TextView(this);
-        status.setTextSize(15);
-        root.addView(status);
+        mStatus = new TextView(this);
+        mStatus.setTextSize(14);
+        mStatus.setPadding(0, 24, 0, 24);
+        root.addView(mStatus);
 
-        Button start = new Button(this);
-        start.setText("Запустить службу");
-        start.setOnClickListener(v -> {
-            Intent svc = new Intent(this, KeyService.class);
+        addBtn(root, "Запустить сервис", v -> {
+            Intent svc = new Intent(this, WheelKeyService.class);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(svc);
             else startService(svc);
             refresh();
         });
-        root.addView(start);
-
-        Button stop = new Button(this);
-        stop.setText("Остановить службу");
-        stop.setOnClickListener(v -> { stopService(new Intent(this, KeyService.class)); refresh(); });
-        root.addView(stop);
-
-        TextView map = new TextView(this);
-        StringBuilder sb = new StringBuilder("\nТекущая раскладка:\n");
-        for (KeyMap.Rule r : KeyMap.rules()) sb.append("• ").append(r.label).append("\n");
-        map.setText(sb.toString());
-        map.setTextSize(14);
-        root.addView(map);
-
-        lastEvent = new TextView(this);
-        lastEvent.setTextSize(14);
-        root.addView(lastEvent);
+        addBtn(root, "Остановить сервис", v -> {
+            stopService(new Intent(this, WheelKeyService.class));
+            refresh();
+        });
+        addBtn(root, "Обновить статус", v -> refresh());
 
         setContentView(root);
-        tick();
+    }
+
+    @Override protected void onResume() { super.onResume(); refresh(); }
+
+    private void addBtn(LinearLayout p, String t, View.OnClickListener l) {
+        Button btn = new Button(this);
+        btn.setText(t); btn.setAllCaps(false); btn.setOnClickListener(l);
+        p.addView(btn);
     }
 
     private void refresh() {
-        boolean logs = checkSelfPermission(android.Manifest.permission.READ_LOGS)
+        boolean readLogs = checkSelfPermission(android.Manifest.permission.READ_LOGS)
                 == PackageManager.PERMISSION_GRANTED;
-        status.setText("Право READ_LOGS: " + (logs ? "ВЫДАНО ✓" : "НЕ выдано ✗\n"
-                + "Выполните на ПК по ADB:\n"
-                + "adb shell pm grant com.gs8.wheelkeys android.permission.READ_LOGS"));
+        boolean hur = isInstalled(Hur.HUR_PACKAGE);
+        boolean logic = isInstalled("com.zhonghong.logic");
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("ZHLogic (ГУ): ").append(logic ? "найден ✓" : "НЕ найден ✗").append('\n');
+        sb.append("HUR установлен: ").append(hur ? "да ✓" : "НЕТ ✗").append('\n');
+        sb.append("READ_LOGS (play/pause): ").append(readLogs ? "выдан ✓" : "нет — только next/prev").append('\n');
+        sb.append('\n');
+        sb.append("next/prev: через источник 15 (чисто)\n");
+        sb.append("play/pause: ").append(readLogs ? "включён (кнопка голоса)" : "выкл (нужен READ_LOGS)").append('\n');
+        if (!readLogs) {
+            sb.append('\n').append("Для play/pause дайте разрешение с ПК:\n");
+            sb.append("adb shell pm grant com.gs8.wheelkeys android.permission.READ_LOGS");
+        }
+        mStatus.setTextColor(logic ? Color.DKGRAY : Color.RED);
+        mStatus.setText(sb.toString());
     }
 
-    private void tick() {
-        refresh();
-        lastEvent.setText("Последнее событие: " + KeyService.lastEvent);
-        ui.postDelayed(this::tick, 1000);
+    private boolean isInstalled(String pkg) {
+        try { getPackageManager().getPackageInfo(pkg, 0); return true; }
+        catch (PackageManager.NameNotFoundException e) { return false; }
     }
 }

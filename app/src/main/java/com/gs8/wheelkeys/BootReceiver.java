@@ -6,16 +6,15 @@ import android.content.Intent;
 import android.os.Build;
 import android.util.Log;
 
-/** Запуск службы при загрузке магнитолы. */
 public class BootReceiver extends BroadcastReceiver {
     @Override
-    public void onReceive(Context context, Intent intent) {
-        Log.i(KeyService.TAG, "BootReceiver: " + intent.getAction() + " — запускаю службу");
-        Intent svc = new Intent(context, KeyService.class);
+    public void onReceive(Context ctx, Intent intent) {
+        Log.i("WheelKeys", "boot event: " + intent.getAction());
+        Intent svc = new Intent(ctx, WheelKeyService.class);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(svc);
+            ctx.startForegroundService(svc);
         } else {
-            context.startService(svc);
+            ctx.startService(svc);
         }
     }
 }
