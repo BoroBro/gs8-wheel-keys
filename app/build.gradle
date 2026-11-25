@@ -14,10 +14,19 @@ android {
 
     buildFeatures { aidl true }
 
+    signingConfigs {
+        release {
+            storeFile file('gs8.keystore')
+            storePassword 'gs8store'
+            keyAlias 'gs8'
+            keyPassword 'gs8key'
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
         }
     }
 
