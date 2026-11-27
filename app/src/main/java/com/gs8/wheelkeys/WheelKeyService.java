@@ -8,6 +8,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -23,37 +24,31 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 
 /**
- * v3.2 (эксперимент): кнопку шлём в HUR всегда (из onMediaButtonPressed, любой src).
- * Плюс команды ручного управления источником через startService:
- *   action SRC extra "id" = N  -> setSourceId(N)
- *   action REL              -> releaseSourceId(15)
- *   action RESUME           -> resumeLastSource
- * Чтобы на месте найти, что убирает радио и не ломает HUR.
+ * v3.3 (финальная схема):
+ *  - кнопки руля ловим из ЛОГА (CanKeyHelper) -> шлём в HUR. Надёжно при любом источнике/фокусе.
+ *  - "HUR-режим": держим источник OFF (4097), чтобы радио не реагировало (безопасно, HUR не ломает).
+ *  - переключатель режима (ВКЛ по умолчанию).
  */
 public class WheelKeyService extends Service {
 
     private static final String TAG = "WheelKeys";
     private static final String CH_ID = "wheelkeys";
     private static final int NOTE_ID = 1;
+    private static final String PREF = "wk";
 
+    public static final String ACTION_TOGGLE = "com.gs8.wheelkeys.TOGGLE";
     public static final String ACTION_SRC = "com.gs8.wheelkeys.SRC";
-    public static final String ACTION_REL = "com.gs8.wheelkeys.REL";
-    public static final String ACTION_RESUME = "com.gs8.wheelkeys.RESUME";
 
     private static final String SVC_PKG = "com.zhonghong.logic";
     private static final String SVC_CLS = "com.zhonghong.logic.service.LogicService";
     private static final int DOMAIN_SOURCE = 2;
-
-    private static final String EV_THIRD = "onThirdSourceChanged";
-    private static final String EV_MEDIA = "onMediaButtonPressed";
-    private static final String EV_SOURCE = "onSourceChanged";
+    private static final int ID_OFF = 4097;      // ID_OFF_ARM — глушит радио, HUR не ломает
 
     public static volatile boolean sRunning = false;
     public static volatile boolean sBound = false;
+    public static volatile boolean sSilence = true;   // HUR-режим: глушить радио
     public static volatile int sSource = -999;
-    public static volatile int sThird = -999;
     public static volatile int sFwdCount = 0;
-    public static volatile String sLastEvent = "—";
     public static volatile String sLastKey = "—";
 
     private ILogicInterface mLogic;
@@ -63,21 +58,34 @@ public class WheelKeyService extends Service {
     private Thread mLogThread;
     private volatile boolean mLogRun = false;
 
+    private final Runnable mWatchdog = new Runnable() {
+        @Override public void run() { silenceTick(); mMain.postDelayed(this, 3000); }
+    };
+
     @Override public void onCreate() {
         super.onCreate();
         sRunning = true;
+        SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
+        sSilence = sp.getBoolean("silence", true);
         startAsForeground();
-        Log.i(TAG, "service created (v3.2 exp)");
+        Log.i(TAG, "service created (v3.3) silence=" + sSilence);
         bindLogic();
         startLogcatWatcher();
+        mMain.postDelayed(mWatchdog, 1500);
     }
 
     @Override public int onStartCommand(Intent intent, int f, int id) {
         if (intent != null && intent.getAction() != null) {
             String a = intent.getAction();
-            if (ACTION_SRC.equals(a))      setSource(intent.getIntExtra("id", 0));
-            else if (ACTION_REL.equals(a)) cmd("releaseSourceId", "15");
-            else if (ACTION_RESUME.equals(a)) cmd("resumeLastSource", "");
+            if (ACTION_TOGGLE.equals(a)) {
+                sSilence = !sSilence;
+                getSharedPreferences(PREF, MODE_PRIVATE).edit().putBoolean("silence", sSilence).apply();
+                Log.i(TAG, "silence -> " + sSilence);
+                if (!sSilence) cmd("resumeLastSource", "");   // выключили режим — вернуть звук/радио
+                else silenceTick();
+            } else if (ACTION_SRC.equals(a)) {
+                cmd("setSourceId", "" + intent.getIntExtra("id", ID_OFF));
+            }
         }
         if (!sBound) bindLogic();
         if (!mLogRun) startLogcatWatcher();
@@ -85,6 +93,9 @@ public class WheelKeyService extends Service {
     }
 
     @Override public void onDestroy() {
+        mMain.removeCallbacks(mWatchdog);
+        // вернуть источник, чтобы не оставлять ГУ в OFF
+        if (sSilence) cmd("resumeLastSource", "");
         stopLogcatWatcher(); unbindLogic(); sRunning = false;
         super.onDestroy(); Log.i(TAG, "destroyed");
     }
@@ -102,12 +113,12 @@ public class WheelKeyService extends Service {
                 .setSmallIcon(android.R.drawable.ic_media_play).setOngoing(true).build());
     }
 
+    // ---------------- bind (для управления источником) ----------------
     private final ServiceConnection mConn = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName n, IBinder b) {
             mLogic = ILogicInterface.Stub.asInterface(b); sBound = true;
             Log.i(TAG, "CONNECTED");
-            try { mLogic.registerLogicCallback(DOMAIN_SOURCE, mCallback); Log.i(TAG, "registered"); }
-            catch (RemoteException e) { Log.w(TAG, "reg err " + e); }
+            try { mLogic.registerLogicCallback(DOMAIN_SOURCE, mCallback); } catch (RemoteException e) {}
         }
         @Override public void onServiceDisconnected(ComponentName n) {
             sBound = false; mLogic = null;
@@ -125,41 +136,26 @@ public class WheelKeyService extends Service {
             unbindService(mConn); } catch (Exception ig) {}
         sBound = false; mLogic = null;
     }
-
-    private void cmd(String c, String v) {
-        if (mLogic == null) { Log.w(TAG, "cmd no bind"); return; }
-        try { mLogic.setCmd(c, v, null); Log.i(TAG, "CMD " + c + "(" + v + ")"); }
-        catch (Exception e) { Log.w(TAG, "cmd err " + e); }
-    }
-    private void setSource(int id) { cmd("setSourceId", "" + id); }
-
     private final ILogicCallback.Stub mCallback = new ILogicCallback.Stub() {
-        @Override public void onEventChanged(String event, String value, String extra) {
-            sLastEvent = event + " v=" + value + " x=" + extra;
-            Log.i(TAG, "EVT " + sLastEvent);
-            try {
-                if (EV_MEDIA.equals(event)) {
-                    int key = parse(value); sSource = parse(extra);
-                    forward(key);                 // шлём ВСЕГДА, независимо от src
-                } else if (EV_THIRD.equals(event)) {
-                    sThird = parse(value);
-                } else if (EV_SOURCE.equals(event)) {
-                    sSource = parse(value);
-                }
-            } catch (Exception e) { Log.w(TAG, "evt err " + e); }
+        @Override public void onEventChanged(String e, String v, String x) {
+            if ("onSourceChanged".equals(e)) sSource = parse(v);
         }
     };
 
-    private void forward(int keyCode) {
-        long now = SystemClock.uptimeMillis();
-        if (now - mLastFwd < DEBOUNCE_MS) return;
-        mLastFwd = now;
-        Hur.sendMediaKey(getApplicationContext(), keyCode);
-        sFwdCount++; sLastKey = "" + keyCode;
+    private int getSrc() { try { return Integer.parseInt(mLogic.getValue("getSourceId", "").trim()); } catch (Exception e) { return -999; } }
+    private void cmd(String c, String v) {
+        if (mLogic == null) return;
+        try { mLogic.setCmd(c, v, null); Log.i(TAG, "CMD " + c + "(" + v + ")"); } catch (Exception e) { Log.w(TAG, "cmd err " + e); }
     }
-    private static int parse(String s) { try { return Integer.parseInt(s.trim()); } catch (Exception e) { return Integer.MIN_VALUE; } }
 
-    // play/pause via EASYCONN
+    /** держим источник OFF, пока включён HUR-режим и текущий источник — радио/медиа */
+    private void silenceTick() {
+        if (!sSilence || mLogic == null) return;
+        int s = getSrc(); sSource = s;
+        if (s == 0 || s == 1) cmd("setSourceId", "" + ID_OFF);   // радио/медиа -> OFF
+    }
+
+    // ---------------- кнопки из лога ----------------
     private void startLogcatWatcher() {
         if (mLogRun) return;
         if (checkSelfPermission(android.Manifest.permission.READ_LOGS)
@@ -174,11 +170,24 @@ public class WheelKeyService extends Service {
             p = Runtime.getRuntime().exec(new String[]{"logcat","-T","1","-v","brief","CanKeyHelper:I","*:S"});
             BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()));
             String line;
-            while (mLogRun && (line = br.readLine()) != null)
-                if (line.contains("KEYCODE_EASYCONN"))
-                    mMain.post(() -> forward(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE));
+            while (mLogRun && (line = br.readLine()) != null) {
+                int key = 0;
+                if (line.contains("KEYCODE_NEXT")) key = KeyEvent.KEYCODE_MEDIA_NEXT;
+                else if (line.contains("KEYCODE_PREV")) key = KeyEvent.KEYCODE_MEDIA_PREVIOUS;
+                else if (line.contains("KEYCODE_EASYCONN")) key = KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE;
+                if (key != 0) { final int k = key; mMain.post(() -> forward(k)); }
+            }
         } catch (Exception e) { Log.w(TAG, "logcat err " + e); }
         finally { if (p != null) p.destroy(); }
         if (mLogRun) { mLogRun = false; mMain.postDelayed(this::startLogcatWatcher, 5000); }
     }
+
+    private void forward(int keyCode) {
+        long now = SystemClock.uptimeMillis();
+        if (now - mLastFwd < DEBOUNCE_MS) return;
+        mLastFwd = now;
+        Hur.sendMediaKey(getApplicationContext(), keyCode);
+        sFwdCount++; sLastKey = "" + keyCode;
+    }
+    private static int parse(String s) { try { return Integer.parseInt(s.trim()); } catch (Exception e) { return -999; } }
 }
