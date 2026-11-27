@@ -23,76 +23,58 @@ public class MainActivity extends Activity {
         @Override public void run() { render(); mUi.postDelayed(this, 1000); }
     };
 
-    @Override
-    protected void onCreate(Bundle b) {
+    @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(28, 28, 28, 28);
         root.setBackgroundColor(Color.BLACK);
-
-        TextView title = new TextView(this);
-        title.setText("GS8 Wheel Keys (v3)");
-        title.setTextSize(20); title.setTextColor(Color.WHITE);
-        root.addView(title);
-
+        TextView t = new TextView(this);
+        t.setText("GS8 Wheel Keys (v3.1)"); t.setTextSize(20); t.setTextColor(Color.WHITE);
+        root.addView(t);
         addBtn(root, "Запустить сервис", v -> {
-            Intent svc = new Intent(this, WheelKeyService.class);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(svc);
-            else startService(svc);
+            Intent s = new Intent(this, WheelKeyService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(s); else startService(s);
             render();
         });
-        addBtn(root, "Остановить сервис", v -> {
-            stopService(new Intent(this, WheelKeyService.class));
-            render();
-        });
-
+        addBtn(root, "Остановить сервис", v -> { stopService(new Intent(this, WheelKeyService.class)); render(); });
         mStatus = new TextView(this);
         mStatus.setTextSize(14); mStatus.setTextColor(Color.WHITE);
-        mStatus.setTypeface(Typeface.MONOSPACE);
-        mStatus.setPadding(0, 20, 0, 0);
-        ScrollView sv = new ScrollView(this);
-        sv.addView(mStatus);
-        root.addView(sv, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        mStatus.setTypeface(Typeface.MONOSPACE); mStatus.setPadding(0, 20, 0, 0);
+        ScrollView sv = new ScrollView(this); sv.addView(mStatus);
+        root.addView(sv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
         setContentView(root);
     }
-
-    private void addBtn(LinearLayout p, String t, View.OnClickListener l) {
-        Button btn = new Button(this);
-        btn.setText(t); btn.setAllCaps(false); btn.setOnClickListener(l);
-        p.addView(btn);
+    private void addBtn(LinearLayout p, String txt, View.OnClickListener l) {
+        Button b = new Button(this); b.setText(txt); b.setAllCaps(false); b.setOnClickListener(l); p.addView(b);
     }
-
     @Override protected void onResume() { super.onResume(); mUi.post(mTick); }
     @Override protected void onPause()  { super.onPause(); mUi.removeCallbacks(mTick); }
-
     private String yn(boolean b) { return b ? "ДА" : "нет"; }
 
     private void render() {
-        boolean readLogs = checkSelfPermission(android.Manifest.permission.READ_LOGS)
-                == PackageManager.PERMISSION_GRANTED;
-        StringBuilder sb = new StringBuilder();
-        sb.append("СЕРВИС\n");
-        sb.append("  запущен:        ").append(yn(WheelKeyService.sRunning)).append('\n');
-        sb.append("  слушает лог:    ").append(yn(WheelKeyService.sWatching)).append('\n');
-        sb.append("  READ_LOGS:      ").append(yn(readLogs)).append('\n');
-        sb.append('\n');
-        sb.append("КНОПКИ -> HUR\n");
-        sb.append("  отправлено:     ").append(WheelKeyService.sFwdCount).append('\n');
-        sb.append("  последняя:      ").append(WheelKeyService.sLastKey).append('\n');
-        sb.append('\n');
-        sb.append("ПРОЧЕЕ\n");
-        sb.append("  HUR установлен: ").append(yn(isInstalled(Hur.HUR_PACKAGE))).append('\n');
-        sb.append('\n');
-        sb.append("v3: источник НЕ захватывается (HUR не ломается).\n");
-        sb.append("Кнопки ловятся из лога и шлются в HUR.\n");
-        sb.append("Нужен READ_LOGS = ДА и «слушает лог» = ДА.");
-        mStatus.setText(sb.toString());
+        boolean rl = checkSelfPermission(android.Manifest.permission.READ_LOGS) == PackageManager.PERMISSION_GRANTED;
+        StringBuilder s = new StringBuilder();
+        s.append("СЕРВИС\n");
+        s.append("  запущен:     ").append(yn(WheelKeyService.sRunning)).append('\n');
+        s.append("  связь с ГУ:  ").append(yn(WheelKeyService.sBound)).append('\n');
+        s.append("  READ_LOGS:   ").append(yn(rl)).append('\n');
+        s.append('\n').append("ИСТОЧНИК\n");
+        s.append("  забрали 15:  ").append(yn(WheelKeyService.sClaimed)).append('\n');
+        s.append("  текущий:     ").append(WheelKeyService.sSource).append('\n');
+        s.append("  третий:      ").append(WheelKeyService.sThird).append('\n');
+        s.append('\n').append("КНОПКИ -> HUR\n");
+        s.append("  отправлено:  ").append(WheelKeyService.sFwdCount).append('\n');
+        s.append("  последняя:   ").append(WheelKeyService.sLastKey).append('\n');
+        s.append("  событие:     ").append(WheelKeyService.sLastEvent).append('\n');
+        s.append('\n').append("HUR установлен: ").append(yn(isInstalled(Hur.HUR_PACKAGE))).append('\n');
+        s.append('\n');
+        s.append("v3.1: источник 15 забирается, когда HUR играет,\n");
+        s.append("и ОТПУСКАЕТСЯ, когда HUR не в фокусе (HUR не ломается).");
+        mStatus.setText(s.toString());
     }
-
-    private boolean isInstalled(String pkg) {
-        try { getPackageManager().getPackageInfo(pkg, 0); return true; }
+    private boolean isInstalled(String p) {
+        try { getPackageManager().getPackageInfo(p, 0); return true; }
         catch (PackageManager.NameNotFoundException e) { return false; }
     }
 }
