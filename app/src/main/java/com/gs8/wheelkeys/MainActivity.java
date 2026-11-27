@@ -32,9 +32,8 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(Color.BLACK);
 
         TextView title = new TextView(this);
-        title.setText("GS8 Wheel Keys");
-        title.setTextSize(20);
-        title.setTextColor(Color.WHITE);
+        title.setText("GS8 Wheel Keys (v3)");
+        title.setTextSize(20); title.setTextColor(Color.WHITE);
         root.addView(title);
 
         addBtn(root, "Запустить сервис", v -> {
@@ -49,15 +48,13 @@ public class MainActivity extends Activity {
         });
 
         mStatus = new TextView(this);
-        mStatus.setTextSize(14);
-        mStatus.setTextColor(Color.WHITE);
+        mStatus.setTextSize(14); mStatus.setTextColor(Color.WHITE);
         mStatus.setTypeface(Typeface.MONOSPACE);
         mStatus.setPadding(0, 20, 0, 0);
         ScrollView sv = new ScrollView(this);
         sv.addView(mStatus);
         root.addView(sv, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
-
         setContentView(root);
     }
 
@@ -70,53 +67,28 @@ public class MainActivity extends Activity {
     @Override protected void onResume() { super.onResume(); mUi.post(mTick); }
     @Override protected void onPause()  { super.onPause(); mUi.removeCallbacks(mTick); }
 
-    private String onoff(boolean b) { return b ? "ДА" : "нет"; }
+    private String yn(boolean b) { return b ? "ДА" : "нет"; }
 
     private void render() {
         boolean readLogs = checkSelfPermission(android.Manifest.permission.READ_LOGS)
                 == PackageManager.PERMISSION_GRANTED;
         StringBuilder sb = new StringBuilder();
         sb.append("СЕРВИС\n");
-        sb.append("  запущен:        ").append(onoff(WheelKeyService.sRunning)).append('\n');
-        sb.append("  связь с ГУ:     ").append(onoff(WheelKeyService.sBound)).append('\n');
-        sb.append("  колбэк источн.: ").append(onoff(WheelKeyService.sRegistered)).append('\n');
+        sb.append("  запущен:        ").append(yn(WheelKeyService.sRunning)).append('\n');
+        sb.append("  слушает лог:    ").append(yn(WheelKeyService.sWatching)).append('\n');
+        sb.append("  READ_LOGS:      ").append(yn(readLogs)).append('\n');
         sb.append('\n');
-        sb.append("ИСТОЧНИК\n");
-        sb.append("  текущий:        ").append(src(WheelKeyService.sCurSource)).append('\n');
-        sb.append("  третий(HUR?):   ").append(src(WheelKeyService.sThird)).append('\n');
-        sb.append("  хотим 15:       ").append(onoff(WheelKeyService.sWant15)).append('\n');
-        sb.append("  забрали 15:     ").append(onoff(WheelKeyService.sCurSource == 15)).append('\n');
-        sb.append('\n');
-        sb.append("ПЕРЕСЫЛКА В HUR\n");
+        sb.append("КНОПКИ -> HUR\n");
         sb.append("  отправлено:     ").append(WheelKeyService.sFwdCount).append('\n');
-        sb.append("  последняя:      ").append(WheelKeyService.sLastFwd).append('\n');
-        sb.append("  последнее соб.: ").append(WheelKeyService.sLastEvent).append('\n');
+        sb.append("  последняя:      ").append(WheelKeyService.sLastKey).append('\n');
         sb.append('\n');
         sb.append("ПРОЧЕЕ\n");
-        sb.append("  READ_LOGS (p/p):").append(onoff(readLogs)).append('\n');
-        sb.append("  HUR установлен: ").append(onoff(isInstalled(Hur.HUR_PACKAGE))).append('\n');
-        sb.append("  ZHLogic на ГУ:  ").append(onoff(isInstalled("com.zhonghong.logic"))).append('\n');
+        sb.append("  HUR установлен: ").append(yn(isInstalled(Hur.HUR_PACKAGE))).append('\n');
         sb.append('\n');
-        sb.append("Подсказка: next/prev работают, когда «забрали 15» = ДА\n");
-        sb.append("(HUR должен играть музыку).");
+        sb.append("v3: источник НЕ захватывается (HUR не ломается).\n");
+        sb.append("Кнопки ловятся из лога и шлются в HUR.\n");
+        sb.append("Нужен READ_LOGS = ДА и «слушает лог» = ДА.");
         mStatus.setText(sb.toString());
-    }
-
-    private String src(int s) {
-        if (s == -999) return "—";
-        String name;
-        switch (s) {
-            case 0: name="радио"; break;
-            case 1: name="медиа"; break;
-            case 3: name="BT-муз"; break;
-            case 11: name="AUX"; break;
-            case 13: name="BT-тел"; break;
-            case 14: name="голос"; break;
-            case 15: name="наш(15)"; break;
-            case 4096: name="нет"; break;
-            default: name=""; break;
-        }
-        return s + (name.isEmpty() ? "" : " (" + name + ")");
     }
 
     private boolean isInstalled(String pkg) {
