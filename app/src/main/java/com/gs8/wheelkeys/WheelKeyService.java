@@ -24,9 +24,8 @@ import java.io.InputStreamReader;
 
 /**
  * Делает приложение источником №15 ZHLogic, когда активен HUR, и
- * пересылает кнопки руля в HUR:
- *   - next/prev  -> чистый канал onMediaButtonPressed (источник 15)
- *   - play/pause -> опциональное слежение за логкатом (кнопка EASYCONN)
+ * пересылает кнопки руля в HUR. next/prev — через onMediaButtonPressed
+ * (чистый AIDL-канал), play/pause — через слежение за логкатом (EASYCONN).
  */
 public class WheelKeyService extends Service {
 
@@ -34,64 +33,76 @@ public class WheelKeyService extends Service {
     private static final String CH_ID = "wheelkeys";
     private static final int NOTE_ID = 1;
 
-    // ZHLogic
     private static final String SVC_PKG = "com.zhonghong.logic";
     private static final String SVC_CLS = "com.zhonghong.logic.service.LogicService";
     private static final int DOMAIN_SOURCE = 2;
-    private static final int ID_THIRD_APP = 15;   // ID_THIRD_AUDIO_APP
-    private static final int ID_NULL = 4096;
+    private static final int ID_THIRD_APP = 15;
 
-    // события
     private static final String EV_SOURCE = "onSourceChanged";
-    private static final String EV_THIRD = "onThirdSourceChanged";
-    private static final String EV_MEDIA = "onMediaButtonPressed";
+    private static final String EV_THIRD  = "onThirdSourceChanged";
+    private static final String EV_MEDIA  = "onMediaButtonPressed";
+
+    // --- состояние для UI (читается из MainActivity) ---
+    public static volatile boolean sRunning = false;
+    public static volatile boolean sBound = false;
+    public static volatile boolean sRegistered = false;
+    public static volatile boolean sWant15 = false;
+    public static volatile int sCurSource = -999;
+    public static volatile int sThird = -999;
+    public static volatile int sFwdCount = 0;
+    public static volatile String sLastEvent = "—";
+    public static volatile String sLastFwd = "—";
 
     private ILogicInterface mLogic;
-    private volatile boolean mBound = false;
     private final Handler mMain = new Handler(Looper.getMainLooper());
 
-    // анти-дребезг пересылки в HUR
     private long mLastFwd = 0L;
     private static final long FWD_DEBOUNCE_MS = 350L;
 
-    // слежение за логкатом (play/pause)
     private Thread mLogThread;
     private volatile boolean mLogRun = false;
 
+    private final Runnable mWatchdog = new Runnable() {
+        @Override public void run() {
+            pollAndClaim();
+            mMain.postDelayed(this, 2000);
+        }
+    };
+
     // ---------------------------------------------------------------- lifecycle
-    @Override
-    public void onCreate() {
+    @Override public void onCreate() {
         super.onCreate();
+        sRunning = true;
         startAsForeground();
+        Log.i(TAG, "service created");
         bindLogic();
         startLogcatWatcher();
-        Log.i(TAG, "service created");
+        mMain.postDelayed(mWatchdog, 1500);
     }
 
-    @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        if (!mBound) bindLogic();
+    @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        if (!sBound) bindLogic();
         if (!mLogRun) startLogcatWatcher();
         return START_STICKY;
     }
 
-    @Override
-    public void onDestroy() {
+    @Override public void onDestroy() {
+        mMain.removeCallbacks(mWatchdog);
         stopLogcatWatcher();
         unbindLogic();
+        sRunning = false;
         super.onDestroy();
         Log.i(TAG, "service destroyed");
     }
 
-    @Override
-    public IBinder onBind(Intent intent) { return null; }
+    @Override public IBinder onBind(Intent intent) { return null; }
 
     // ---------------------------------------------------------------- foreground
     private void startAsForeground() {
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (nm != null && nm.getNotificationChannel(CH_ID) == null) {
-            NotificationChannel ch = new NotificationChannel(
-                    CH_ID, "Wheel Keys", NotificationManager.IMPORTANCE_MIN);
+            NotificationChannel ch = new NotificationChannel(CH_ID, "Wheel Keys",
+                    NotificationManager.IMPORTANCE_MIN);
             ch.setShowBadge(false);
             nm.createNotificationChannel(ch);
         }
@@ -99,8 +110,7 @@ public class WheelKeyService extends Service {
                 .setContentTitle("GS8 Wheel Keys")
                 .setContentText("Кнопки руля -> HUR")
                 .setSmallIcon(android.R.drawable.ic_media_play)
-                .setOngoing(true)
-                .build();
+                .setOngoing(true).build();
         startForeground(NOTE_ID, n);
     }
 
@@ -108,18 +118,17 @@ public class WheelKeyService extends Service {
     private final ServiceConnection mConn = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name, IBinder binder) {
             mLogic = ILogicInterface.Stub.asInterface(binder);
-            mBound = true;
-            Log.i(TAG, "LogicService connected");
+            sBound = true;
+            Log.i(TAG, "LogicService CONNECTED");
             try {
                 mLogic.registerLogicCallback(DOMAIN_SOURCE, mCallback);
-                Log.i(TAG, "registered source callback");
+                sRegistered = true;
+                Log.i(TAG, "registerLogicCallback(domain=2) OK");
             } catch (RemoteException e) { Log.w(TAG, "register err: " + e); }
-            // если HUR уже играет на момент старта — сразу забираем источник
-            mMain.postDelayed(WheelKeyService.this::claimIfThirdActive, 800);
         }
         @Override public void onServiceDisconnected(ComponentName name) {
-            mBound = false; mLogic = null;
-            Log.w(TAG, "LogicService disconnected, rebind");
+            sBound = false; sRegistered = false; mLogic = null;
+            Log.w(TAG, "LogicService DISCONNECTED, rebind in 2s");
             mMain.postDelayed(WheelKeyService.this::bindLogic, 2000);
         }
     };
@@ -135,64 +144,61 @@ public class WheelKeyService extends Service {
 
     private void unbindLogic() {
         try {
-            if (mBound && mLogic != null) {
+            if (sBound && mLogic != null)
                 try { mLogic.unregisterLogicCallback(DOMAIN_SOURCE, mCallback); } catch (Exception ignore) {}
-            }
             unbindService(mConn);
         } catch (Exception ignore) {}
-        mBound = false; mLogic = null;
+        sBound = false; sRegistered = false; mLogic = null;
     }
 
     // ---------------------------------------------------------------- source logic
-    private int getSourceId() {
-        try { return Integer.parseInt(mLogic.getValue("getSourceId", "")); }
-        catch (Exception e) { return -1; }
+    private int getInt(String key) {
+        try { return Integer.parseInt(mLogic.getValue(key, "").trim()); }
+        catch (Exception e) { return -999; }
     }
 
-    private int getThirdSourceId() {
-        try { return Integer.parseInt(mLogic.getValue("getThirdSourceId", "")); }
-        catch (Exception e) { return -1; }
-    }
-
-    private void claimSource() {
+    private void claimSource(String why) {
         if (mLogic == null) return;
         try {
-            if (getSourceId() != ID_THIRD_APP) {
+            int cur = getInt("getSourceId");
+            if (cur != ID_THIRD_APP) {
                 mLogic.setCmd("setSourceId", "" + ID_THIRD_APP, null);
-                Log.i(TAG, "claim: setSourceId(15)");
+                Log.i(TAG, "CLAIM setSourceId(15) [" + why + "] prev=" + cur);
             }
         } catch (Exception e) { Log.w(TAG, "claim err: " + e); }
     }
 
-    private void reclaimAfterPlayPause() {
+    /** Периодический сторож: держим источник 15, пока HUR владеет звуком. */
+    private void pollAndClaim() {
         if (mLogic == null) return;
-        int src = getSourceId();
-        if (src != ID_THIRD_APP) {
-            Log.i(TAG, "reclaim after play/pause: source was " + src + " -> 15");
-            claimSource();
+        int src = getInt("getSourceId");
+        int third = getInt("getThirdSourceId");
+        sCurSource = src; sThird = third;
+        // HUR владеет звуком -> хотим источник 15
+        if (third == ID_THIRD_APP) sWant15 = true;
+        // пользователь ушёл на локальный источник (радио/медиа) -> отпускаем
+        if (src != ID_THIRD_APP && third != ID_THIRD_APP && third != -999
+                && src != -999 && src != 13 && src != 14) {
+            sWant15 = false;
         }
-    }
-
-    private void claimIfThirdActive() {
-        if (mLogic == null) return;
-        if (getThirdSourceId() == ID_THIRD_APP) claimSource();
+        if (sWant15 && src != ID_THIRD_APP) claimSource("watchdog third=" + third);
     }
 
     private final ILogicCallback.Stub mCallback = new ILogicCallback.Stub() {
         @Override public void onEventChanged(String event, String value, String extra) {
+            sLastEvent = event + " v=" + value + " x=" + extra;
+            Log.i(TAG, "EVT " + sLastEvent);
             try {
                 if (EV_THIRD.equals(event)) {
-                    int third = parse(value);
-                    // HUR взял фокус (старт/возврат с радио/после звонка) -> забираем источник
-                    if (third == ID_THIRD_APP) mMain.post(WheelKeyService.this::claimSource);
-                    // 4096 (пауза HUR) / 13 (звонок) / 14 (голос) — НЕ трогаем, источник держим
+                    if (parse(value) == ID_THIRD_APP) {
+                        sWant15 = true;
+                        mMain.post(() -> claimSource("onThirdSourceChanged=15"));
+                    }
                 } else if (EV_MEDIA.equals(event)) {
-                    int key = parse(value);
-                    int src = parse(extra);
+                    int key = parse(value), src = parse(extra);
                     if (src == ID_THIRD_APP) forwardToHur(key);
-                    // если источник локальный — игнор, пусть он сам обрабатывает
+                    else Log.i(TAG, "media key " + key + " ignored (src=" + src + ")");
                 }
-                // EV_SOURCE: информативно; явный уход на локальный источник отдаём сами собой
             } catch (Exception e) { Log.w(TAG, "evt err: " + e); }
         }
     };
@@ -202,6 +208,8 @@ public class WheelKeyService extends Service {
         if (now - mLastFwd < FWD_DEBOUNCE_MS) return;
         mLastFwd = now;
         Hur.sendMediaKey(getApplicationContext(), keyCode);
+        sFwdCount++;
+        sLastFwd = "key " + keyCode + " @" + (now / 1000 % 1000);
     }
 
     private static int parse(String s) {
@@ -213,7 +221,7 @@ public class WheelKeyService extends Service {
         if (mLogRun) return;
         if (checkSelfPermission(android.Manifest.permission.READ_LOGS)
                 != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            Log.i(TAG, "READ_LOGS не выдан — play/pause отключён (next/prev работают)");
+            Log.i(TAG, "READ_LOGS не выдан — play/pause выключен (next/prev работают)");
             return;
         }
         mLogRun = true;
@@ -231,20 +239,17 @@ public class WheelKeyService extends Service {
     private void logcatLoop() {
         Process proc = null;
         try {
-            try { Runtime.getRuntime().exec(new String[]{"logcat", "-c"}).waitFor(); } catch (Exception ignore) {}
+            // НЕ чистим общий лог (logcat -c) — только читаем новое
             proc = Runtime.getRuntime().exec(new String[]{
-                    "logcat", "-v", "brief", "CanKeyHelper:I", "*:S"});
+                    "logcat", "-T", "1", "-v", "brief", "CanKeyHelper:I", "*:S"});
             BufferedReader br = new BufferedReader(new InputStreamReader(proc.getInputStream()));
             String line;
             while (mLogRun && (line = br.readLine()) != null) {
-                // кнопка голоса (длинное нажатие EASYCONN) -> play/pause
                 if (line.contains("KEYCODE_EASYCONN")) {
                     mMain.post(() -> {
                         forwardToHur(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);
-                        // Прошивка на этой кнопке пытается запустить EasyConn и
-                        // уводит источник от 15 -> возвращаем себе источник.
-                        mMain.postDelayed(WheelKeyService.this::reclaimAfterPlayPause, 500);
-                        mMain.postDelayed(WheelKeyService.this::reclaimAfterPlayPause, 1400);
+                        mMain.postDelayed(() -> claimSource("after play/pause"), 500);
+                        mMain.postDelayed(() -> claimSource("after play/pause"), 1400);
                     });
                 }
             }
@@ -253,10 +258,6 @@ public class WheelKeyService extends Service {
         } finally {
             if (proc != null) proc.destroy();
         }
-        // авто-перезапуск, если нас не останавливали
-        if (mLogRun) {
-            mLogRun = false;
-            mMain.postDelayed(this::startLogcatWatcher, 3000);
-        }
+        if (mLogRun) { mLogRun = false; mMain.postDelayed(this::startLogcatWatcher, 5000); }
     }
 }
