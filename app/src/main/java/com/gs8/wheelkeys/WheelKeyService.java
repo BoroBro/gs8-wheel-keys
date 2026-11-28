@@ -4,11 +4,14 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -24,10 +27,15 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 
 /**
- * v3.3 (финальная схема):
+ * v3.5:
  *  - кнопки руля ловим из ЛОГА (CanKeyHelper) -> шлём в HUR. Надёжно при любом источнике/фокусе.
- *  - "HUR-режим": держим источник OFF (4097), чтобы радио не реагировало (безопасно, HUR не ломает).
- *  - переключатель режима (ВКЛ по умолчанию).
+ *  - Глушение радио СОБЫТИЙНОЕ (один раз на событие), без постоянного вотчдога — чтобы
+ *    можно было вручную включить радио (напр. поставив AA на паузу), и оно не выключалось само.
+ *  - АВТО-режим: ловим SESSION_STATE от HUR. projecting/connected -> глушим радио;
+ *    disconnected/failed -> возвращаем прежний источник (resumeLastSource).
+ *  - Ручной переключатель HUR-режима = оверрайд (работает и если HUR не шлёт SESSION_STATE).
+ *  - После пересылки клавиши при включённом глушении — разовое повторное задавливание источника
+ *    (точечная защита от двойного действия, ручное радио в режиме "выкл" не трогаем).
  */
 public class WheelKeyService extends Service {
 
@@ -36,8 +44,12 @@ public class WheelKeyService extends Service {
     private static final int NOTE_ID = 1;
     private static final String PREF = "wk";
 
-    public static final String ACTION_TOGGLE = "com.gs8.wheelkeys.TOGGLE";
-    public static final String ACTION_SRC = "com.gs8.wheelkeys.SRC";
+    public static final String ACTION_TOGGLE = "com.gs8.wheelkeys.TOGGLE"; // ручной HUR-режим
+    public static final String ACTION_AUTO   = "com.gs8.wheelkeys.AUTO";   // авто по AA вкл/выкл
+    public static final String ACTION_SRC    = "com.gs8.wheelkeys.SRC";
+
+    // broadcast состояния сессии от Headunit Revived
+    private static final String HUR_SESSION_ACTION = "com.andrerinas.headunitrevived.SESSION_STATE";
 
     private static final String SVC_PKG = "com.zhonghong.logic";
     private static final String SVC_CLS = "com.zhonghong.logic.service.LogicService";
@@ -46,10 +58,14 @@ public class WheelKeyService extends Service {
 
     public static volatile boolean sRunning = false;
     public static volatile boolean sBound = false;
-    public static volatile boolean sSilence = true;   // HUR-режим: глушить радио
+    public static volatile boolean sSilence = true;        // радио заглушено (эффективное состояние)
+    public static volatile boolean sAuto = true;           // авто-переключение по AA-сессии
+    public static volatile boolean sManualOverride = false;// пользователь вручную выбрал состояние
     public static volatile int sSource = -999;
     public static volatile int sFwdCount = 0;
     public static volatile String sLastKey = "—";
+    public static volatile String sAaState = "—";          // последнее состояние AA
+    public static volatile String sAaRaw = "—";            // отладка: сырой broadcast
 
     private ILogicInterface mLogic;
     private final Handler mMain = new Handler(Looper.getMainLooper());
@@ -58,8 +74,8 @@ public class WheelKeyService extends Service {
     private Thread mLogThread;
     private volatile boolean mLogRun = false;
 
-    private final Runnable mWatchdog = new Runnable() {
-        @Override public void run() { silenceTick(); mMain.postDelayed(this, 3000); }
+    private final BroadcastReceiver mSessionRx = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent it) { onSession(it); }
     };
 
     @Override public void onCreate() {
@@ -67,22 +83,31 @@ public class WheelKeyService extends Service {
         sRunning = true;
         SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
         sSilence = sp.getBoolean("silence", true);
+        sAuto = sp.getBoolean("auto", true);
         startAsForeground();
-        Log.i(TAG, "service created (v3.3) silence=" + sSilence);
+        Log.i(TAG, "service created (v3.5) silence=" + sSilence + " auto=" + sAuto);
+        try {
+            IntentFilter f = new IntentFilter();
+            f.addAction(HUR_SESSION_ACTION);
+            registerReceiver(mSessionRx, f);
+            Log.i(TAG, "SESSION_STATE receiver registered");
+        } catch (Exception e) { Log.w(TAG, "rx reg err " + e); }
         bindLogic();
         startLogcatWatcher();
-        mMain.postDelayed(mWatchdog, 1500);
     }
 
     @Override public int onStartCommand(Intent intent, int f, int id) {
         if (intent != null && intent.getAction() != null) {
             String a = intent.getAction();
             if (ACTION_TOGGLE.equals(a)) {
-                sSilence = !sSilence;
-                getSharedPreferences(PREF, MODE_PRIVATE).edit().putBoolean("silence", sSilence).apply();
-                Log.i(TAG, "silence -> " + sSilence);
-                if (!sSilence) cmd("resumeLastSource", "");   // выключили режим — вернуть звук/радио
-                else silenceTick();
+                sManualOverride = true;                 // ручной выбор — выше авто
+                setSilence(!sSilence);
+                Log.i(TAG, "manual silence -> " + sSilence);
+            } else if (ACTION_AUTO.equals(a)) {
+                sAuto = !sAuto;
+                getSharedPreferences(PREF, MODE_PRIVATE).edit().putBoolean("auto", sAuto).apply();
+                if (sAuto) sManualOverride = false;     // снова доверяем AA
+                Log.i(TAG, "auto -> " + sAuto);
             } else if (ACTION_SRC.equals(a)) {
                 cmd("setSourceId", "" + intent.getIntExtra("id", ID_OFF));
             }
@@ -93,9 +118,8 @@ public class WheelKeyService extends Service {
     }
 
     @Override public void onDestroy() {
-        mMain.removeCallbacks(mWatchdog);
-        // вернуть источник, чтобы не оставлять ГУ в OFF
-        if (sSilence) cmd("resumeLastSource", "");
+        try { unregisterReceiver(mSessionRx); } catch (Exception ig) {}
+        if (sSilence) cmd("resumeLastSource", "");   // не оставлять ГУ в OFF
         stopLogcatWatcher(); unbindLogic(); sRunning = false;
         super.onDestroy(); Log.i(TAG, "destroyed");
     }
@@ -113,12 +137,67 @@ public class WheelKeyService extends Service {
                 .setSmallIcon(android.R.drawable.ic_media_play).setOngoing(true).build());
     }
 
-    // ---------------- bind (для управления источником) ----------------
+    // ---------------- AA session ----------------
+    private void onSession(Intent it) {
+        String act = it.getAction();
+        String raw = dumpExtras(it);
+        String st = extractState(it);
+        sAaRaw = (act == null ? "?" : act) + " | " + raw;
+        Log.i(TAG, "SESSION recv: " + sAaRaw + " -> state=" + st);
+        if (st == null) return;
+        sAaState = st;
+        String s = st.toLowerCase();
+        if (s.contains("disconnect") || s.contains("fail") || s.contains("stopped") || s.contains("ended")) {
+            sManualOverride = false;                 // сессия кончилась — сброс оверрайда
+            if (sAuto) setSilence(false);            // вернуть радио/прежний источник
+        } else if (s.contains("project") || s.contains("connected")) {
+            if (sAuto && !sManualOverride) setSilence(true);  // AA активен -> заглушить радио
+        }
+        // "connecting" — ничего
+    }
+
+    private String extractState(Intent it) {
+        Bundle ex = it.getExtras();
+        if (ex == null) return null;
+        String[] keys = {"state", "session_state", "sessionState", "status", "SESSION_STATE"};
+        for (String k : keys) { Object o = ex.get(k); if (o != null) return String.valueOf(o); }
+        for (String k : ex.keySet()) {
+            Object o = ex.get(k);
+            if (o instanceof String) {
+                String v = ((String) o).toLowerCase();
+                if (v.contains("project") || v.contains("connect") || v.contains("disconnect") || v.contains("fail"))
+                    return (String) o;
+            }
+        }
+        return null;
+    }
+    private String dumpExtras(Intent it) {
+        Bundle ex = it.getExtras();
+        if (ex == null) return "(no extras)";
+        StringBuilder sb = new StringBuilder();
+        for (String k : ex.keySet()) { sb.append(k).append('=').append(ex.get(k)).append(' '); }
+        return sb.toString().trim();
+    }
+
+    // ---------------- silence ----------------
+    private void setSilence(boolean on) {
+        sSilence = on;
+        getSharedPreferences(PREF, MODE_PRIVATE).edit().putBoolean("silence", on).apply();
+        applySilence(on);
+    }
+    private void applySilence(boolean on) {
+        if (on) cmd("setSourceId", "" + ID_OFF);
+        else cmd("resumeLastSource", "");
+    }
+
+    // ---------------- bind (управление источником) ----------------
     private final ServiceConnection mConn = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName n, IBinder b) {
             mLogic = ILogicInterface.Stub.asInterface(b); sBound = true;
             Log.i(TAG, "CONNECTED");
             try { mLogic.registerLogicCallback(DOMAIN_SOURCE, mCallback); } catch (RemoteException e) {}
+            sSource = getSrc();
+            if (sSilence) applySilence(true);   // применить сохранённое глушение один раз
         }
         @Override public void onServiceDisconnected(ComponentName n) {
             sBound = false; mLogic = null;
@@ -146,13 +225,6 @@ public class WheelKeyService extends Service {
     private void cmd(String c, String v) {
         if (mLogic == null) return;
         try { mLogic.setCmd(c, v, null); Log.i(TAG, "CMD " + c + "(" + v + ")"); } catch (Exception e) { Log.w(TAG, "cmd err " + e); }
-    }
-
-    /** держим источник OFF, пока включён HUR-режим и текущий источник — радио/медиа */
-    private void silenceTick() {
-        if (!sSilence || mLogic == null) return;
-        int s = getSrc(); sSource = s;
-        if (s == 0 || s == 1) cmd("setSourceId", "" + ID_OFF);   // радио/медиа -> OFF
     }
 
     // ---------------- кнопки из лога ----------------
@@ -188,6 +260,8 @@ public class WheelKeyService extends Service {
         mLastFwd = now;
         Hur.sendMediaKey(getApplicationContext(), keyCode);
         sFwdCount++; sLastKey = "" + keyCode;
+        // точечная защита от двойного действия: если радио должно быть заглушено — повторно задавим
+        if (sSilence) mMain.postDelayed(() -> { if (sSilence) cmd("setSourceId", "" + ID_OFF); }, 600);
     }
     private static int parse(String s) { try { return Integer.parseInt(s.trim()); } catch (Exception e) { return -999; } }
 }

@@ -21,6 +21,7 @@ public class MainActivity extends Activity {
 
     private TextView mStatus;
     private Button mToggle;
+    private Button mAuto;
     private final Handler mUi = new Handler(Looper.getMainLooper());
     private final Runnable mTick = new Runnable() {
         @Override public void run() { render(); mUi.postDelayed(this, 1000); }
@@ -37,7 +38,7 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(Color.BLACK);
 
         TextView title = new TextView(this);
-        title.setText("GS8 Wheel Keys (v3.4)");
+        title.setText("GS8 Wheel Keys (v3.5)");
         title.setTextSize(20); title.setTextColor(Color.WHITE);
         root.addView(title, new LinearLayout.LayoutParams(MATCH, WRAP));
 
@@ -57,6 +58,14 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(MATCH, WRAP);
         tp.topMargin = 16;
         root.addView(mToggle, tp);
+
+        // переключатель авто-режима (по AA-сессии) — на всю ширину
+        mAuto = mkButton("Авто по AA", v -> send(WheelKeyService.ACTION_AUTO));
+        mAuto.setTextSize(15);
+        mAuto.setPadding(16, 20, 16, 20);
+        LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(MATCH, WRAP);
+        ap.topMargin = 12;
+        root.addView(mAuto, ap);
 
         mStatus = new TextView(this);
         mStatus.setTextSize(15); mStatus.setTextColor(Color.WHITE);
@@ -96,11 +105,28 @@ public class MainActivity extends Activity {
         mToggle.setTextColor(Color.WHITE);
         mToggle.setGravity(Gravity.CENTER);
 
+        boolean auto = WheelKeyService.sAuto;
+        mAuto.setText(auto
+                ? "Авто по AA: ВКЛ  (радио само глушится/возвращается)"
+                : "Авто по AA: выкл  (только ручной режим)");
+        mAuto.setBackgroundColor(auto ? Color.parseColor("#0D47A1") : Color.parseColor("#37474F"));
+        mAuto.setTextColor(Color.WHITE);
+        mAuto.setGravity(Gravity.CENTER);
+
         StringBuilder s = new StringBuilder();
         s.append("СЕРВИС\n");
         s.append("  запущен:     ").append(yn(WheelKeyService.sRunning)).append('\n');
         s.append("  связь с ГУ:  ").append(yn(WheelKeyService.sBound)).append('\n');
         s.append("  READ_LOGS:   ").append(yn(rl)).append('\n');
+        s.append('\n');
+        s.append("РЕЖИМ\n");
+        s.append("  радио глушим: ").append(yn(on)).append('\n');
+        s.append("  авто по AA:   ").append(yn(auto)).append('\n');
+        s.append("  ручной выбор: ").append(yn(WheelKeyService.sManualOverride)).append('\n');
+        s.append('\n');
+        s.append("ANDROID AUTO (HUR)\n");
+        s.append("  состояние:   ").append(WheelKeyService.sAaState).append('\n');
+        s.append("  broadcast:   ").append(WheelKeyService.sAaRaw).append('\n');
         s.append('\n');
         s.append("ИСТОЧНИК\n");
         s.append("  текущий:     ").append(WheelKeyService.sSource)
